@@ -1,0 +1,138 @@
+# %%
+import os
+import streamlit as st
+from langchain.vectorstores import DeepLake
+from langchain.embeddings import OpenAIEmbeddings
+from dotenv import load_dotenv
+import subprocess
+from langchain.document_loaders import TextLoader
+from langchain.text_splitter import CharacterTextSplitter
+from langchain.chat_models import ChatOpenAI
+from langchain.chains import ConversationalRetrievalChain, RetrievalQA
+from langchain.memory import ConversationBufferMemory
+from langchain.llms import OpenAI
+from datetime import datetime, timedelta
+import time
+from langchain.document_loaders import UnstructuredFileLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter, Language
+from langchain.prompts import (
+    PromptTemplate,
+)
+from openai import OpenAI
+
+client = OpenAI()
+from langchain.vectorstores import DeepLake
+import autogen
+from autogen.agentchat.contrib.retrieve_assistant_agent import RetrieveAssistantAgent
+from autogen.agentchat.contrib.retrieve_user_proxy_agent import RetrieveUserProxyAgent
+
+
+from dotenv import load_dotenv
+os.environ["HUGGINGFACE_API_KEY"] = "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" 
+env_path = os.path.join(os.path.dirname(__file__), '..', '.env')
+load_dotenv(dotenv_path=env_path)
+embedding = OpenAIEmbeddings(disallowed_special=())
+
+
+# %%
+config_list = [
+    {"model": "gpt-3.5-turbo-16k", 
+     "api_key": "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"}
+]
+
+llm_config = {
+    "request_timeout": 600,
+    "seed": 15,
+    "config_list": config_list,
+    "temperature": 0,
+}
+
+def embedding_function(texts, model="text-embedding-ada-002"):
+    if isinstance(texts, str):
+        texts = [texts]
+    texts = [t.replace("\n", " ") for t in texts]
+    return [data['embedding'] for data in client.embeddings.create(input=texts, model=model)['data']]
+
+assistant = RetrieveAssistantAgent(
+    name="assistant",
+    system_message="You are a helpful assistant.",
+    llm_config=llm_config,
+)
+
+
+class DeepLakeRetrieveUserProxyAgent(RetrieveUserProxyAgent):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        # Initialize DeepLake
+        self.db = DeepLake(
+            dataset_path=f"hub://gyasis/MS_autogen",
+            read_only=True,
+            embedding=embedding,  # Make sure 'embedding' is defined or passed as an argument
+        )
+        self.retriever = self.db.as_retriever(search_type="mmr")
+        self.search_space = 20
+        self.retriever.search_kwargs.update({
+            "distance_metric": "cos",
+            "fetch_k": self.search_space,
+            "maximal_marginal_relevance": True,
+            "k": 10  # Default value, can be overridden in retrieve_docs
+        })
+
+        # Define a custom token count function
+        self.custom_token_count_function = self.count_tokens
+
+    def count_tokens(self, text, model):
+        # Implement a more sophisticated token count logic here if needed
+        return len(text.split())  # Simple example using word count
+
+    def retrieve_docs(self, problem: str, n_results: int = 2, search_string: str = "", **kwargs):
+        # Search the vector store with the given problem
+        raw_results = self.db.vectorstore.search(embedding_data=problem, embedding_function=embedding_function, k=n_results)
+
+        # Transform the raw results into the expected format
+        transformed_results = {
+            "ids": [[id_] for id_ in raw_results['id']],  # Transform to list of lists
+            "documents": raw_results['text'],
+            "metadatas": raw_results['metadata']
+        }
+     
+
+        # Store the transformed results
+        self._results = transformed_results
+
+    def _get_context(self,results):
+        doc_contents = ""
+        current_tokens = 0
+
+        for idx, (doc_id, doc) in enumerate(zip(self._results['ids'], self._results['documents'])):
+            if idx <= self._doc_idx:
+                continue
+
+            if doc_id in self._doc_ids:
+                continue
+
+            _doc_tokens = self.custom_token_count_function(doc, self._model)
+            if _doc_tokens > self._context_max_tokens:
+                self._doc_idx = idx
+                continue
+
+            if current_tokens + _doc_tokens > self._context_max_tokens:
+                break
+
+            doc_contents += doc + "\n"
+            current_tokens += _doc_tokens
+            self._doc_idx = idx
+            self._doc_ids.append(doc_id)
+
+        return doc_contents
+        
+# Instantiate the agent
+deepagent = DeepLakeRetrieveUserProxyAgent(name="deepagent", retrieve_config={"task": "qa"})
+# %%
+problem = input("Ask you question")
+# Example usage
+assistant.reset()
+deepagent.initiate_chat(assistant, problem=problem)
+
+# %%

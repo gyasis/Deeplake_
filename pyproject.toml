@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "deeplake pandas openai tiktoken"
+version = "0.1.0"
+description = ""
+authors = ["gyasis"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "3.11.7"
+ipython = "^8.20.0"
+numpy = "^1.26.3"
+openai = "^1.8.0"
+python-dotenv = "^1.0.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
